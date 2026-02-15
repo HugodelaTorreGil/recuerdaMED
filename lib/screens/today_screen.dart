@@ -139,18 +139,7 @@ class TodayScreen extends StatelessWidget {
         ),
       ),
 
-      //BOTTOM NAV
-      bottomNavigationBar: BottomNavigationBar(
-        selectedItemColor: const Color(0xFF4CAF50),
-        unselectedItemColor: Colors.grey,
-        type: BottomNavigationBarType.fixed,
-        items: const [
-          BottomNavigationBarItem(icon: Icon(Icons.home), label: 'Hoy'),
-          BottomNavigationBarItem(icon: Icon(Icons.medication), label: 'Medicamentos'),
-          BottomNavigationBarItem(icon: Icon(Icons.receipt_long), label: 'Historial'),
-          BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Perfil'),
-        ],
-      ),
+    
     );
   }
 }

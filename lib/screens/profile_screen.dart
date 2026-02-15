@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -271,7 +273,30 @@ class _LogoutButton extends StatelessWidget {
         width: double.infinity,
         height: 52,
         child: OutlinedButton.icon(
-          onPressed: null,
+          onPressed: () async {
+            final ok = await showDialog<bool>(
+              context: context,
+              builder: (_) => AlertDialog(
+                title: const Text('Cerrar sesión'),
+                content: const Text('¿Seguro que quieres cerrar sesión?'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('Cancelar'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('Salir'),
+                  ),
+                ],
+              ),
+            );
+
+            if (ok == true) {
+              await FirebaseAuth.instance.signOut();
+            }
+          },
+
           icon: const Icon(Icons.logout, color: Colors.redAccent),
           label: const Text(
             'Cerrar Sesión',
