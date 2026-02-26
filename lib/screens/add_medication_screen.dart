@@ -1,29 +1,308 @@
 import 'package:flutter/material.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:recuerdamed/services/notification_service.dart';
 
-class AddMedicationScreen extends StatelessWidget {
-  const AddMedicationScreen({super.key});
+class AddMedicationScreen extends StatefulWidget {
+  const AddMedicationScreen({
+    super.key,
+    this.medicationId,
+    this.initialData,
+  });
+
+  final String? medicationId; // null => add, no null => edit
+  final Map<String, dynamic>? initialData;
+
+  bool get isEdit => medicationId != null;
+
+  @override
+  State<AddMedicationScreen> createState() => _AddMedicationScreenState();
+}
+
+class _AddMedicationScreenState extends State<AddMedicationScreen> {
+  final _nameCtrl = TextEditingController();
+  final _doseCtrl = TextEditingController();
+  final _notesCtrl = TextEditingController();
+
+  TimeOfDay _time = const TimeOfDay(hour: 8, minute: 0);
+  String _frequency = 'Diario';
+
+  DateTime _startDate = DateTime.now();
+  DateTime _endDate = DateTime.now();
+
+  bool _loading = false;
+  bool _initialized = false;
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    _doseCtrl.dispose();
+    _notesCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+
+    if (!widget.isEdit) return;
+    final data = widget.initialData;
+    if (data == null) return;
+
+    _nameCtrl.text = (data['name'] ?? '').toString();
+    _doseCtrl.text = (data['dose'] ?? '').toString();
+    _notesCtrl.text = (data['notes'] ?? '').toString();
+
+    final timeStr = (data['time'] ?? '').toString().trim();
+    final parsedTime = _parseTime(timeStr);
+    if (parsedTime != null) _time = parsedTime;
+
+    final freq = (data['frequency'] ?? '').toString();
+    if (freq.isNotEmpty) _frequency = freq;
+
+    final s = data['startDate'];
+    final e = data['endDate'];
+
+    if (s is Timestamp) _startDate = s.toDate();
+    if (e is Timestamp) _endDate = e.toDate();
+
+    // Normaliza a "solo día"
+    _startDate = DateTime(_startDate.year, _startDate.month, _startDate.day);
+    _endDate = DateTime(_endDate.year, _endDate.month, _endDate.day);
+
+    if (_endDate.isBefore(_startDate)) _endDate = _startDate;
+
+    setState(() {});
+  }
+
+  TimeOfDay? _parseTime(String s) {
+    // Espera "HH:mm"
+    final match = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(s);
+    if (match == null) return null;
+    final h = int.tryParse(match.group(1) ?? '');
+    final m = int.tryParse(match.group(2) ?? '');
+    if (h == null || m == null) return null;
+    if (h < 0 || h > 23 || m < 0 || m > 59) return null;
+    return TimeOfDay(hour: h, minute: m);
+  }
+
+  String _formatTime(TimeOfDay t) {
+    final h = t.hour.toString().padLeft(2, '0');
+    final m = t.minute.toString().padLeft(2, '0');
+    return '$h:$m';
+  }
+
+  String _formatDate(DateTime d) {
+    final dd = d.day.toString().padLeft(2, '0');
+    final mm = d.month.toString().padLeft(2, '0');
+    final yy = d.year.toString();
+    return '$dd/$mm/$yy';
+  }
+
+  Future<void> _pickTime() async {
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: _time,
+    );
+    if (picked != null) {
+      setState(() => _time = picked);
+    }
+  }
+
+  Future<void> _pickStartDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _startDate,
+      firstDate: DateTime(2020),
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() {
+        _startDate = DateTime(picked.year, picked.month, picked.day);
+        if (_endDate.isBefore(_startDate)) _endDate = _startDate;
+      });
+    }
+  }
+
+  Future<void> _pickEndDate() async {
+    final picked = await showDatePicker(
+      context: context,
+      initialDate: _endDate,
+      firstDate: _startDate,
+      lastDate: DateTime(2100),
+    );
+    if (picked != null) {
+      setState(() {
+        _endDate = DateTime(picked.year, picked.month, picked.day);
+      });
+    }
+  }
+
+  Future<void> _save() async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null) return;
+
+  final name = _nameCtrl.text.trim();
+  final dose = _doseCtrl.text.trim();
+  final notes = _notesCtrl.text.trim();
+
+  if (name.isEmpty || dose.isEmpty) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Rellena nombre y dosis')),
+    );
+    return;
+  }
+
+  if (_endDate.isBefore(_startDate)) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+          content: Text('La fecha de fin no puede ser anterior a la de inicio')),
+    );
+    return;
+  }
+
+  setState(() => _loading = true);
+
+  try {
+    final medsCol = FirebaseFirestore.instance
+        .collection('users')
+        .doc(user.uid)
+        .collection('medications');
+
+    final payload = <String, dynamic>{
+      'name': name,
+      'dose': dose,
+      'time': _formatTime(_time), // "08:00"
+      'frequency': _frequency,
+      'startDate': Timestamp.fromDate(_startDate),
+      'endDate': Timestamp.fromDate(_endDate),
+      'notes': notes,
+      'updatedAt': FieldValue.serverTimestamp(),
+    };
+
+    if (widget.isEdit) {
+      // 1) Cancelar notificaciones anteriores (si tenemos datos previos)
+      final old = widget.initialData ?? {};
+      final oldTime = (old['time'] ?? '').toString();
+      final oldStartTs = old['startDate'];
+      final oldEndTs = old['endDate'];
+
+      DateTime oldStart = _startDate;
+      DateTime oldEnd = _endDate;
+      if (oldStartTs is Timestamp) oldStart = oldStartTs.toDate();
+      if (oldEndTs is Timestamp) oldEnd = oldEndTs.toDate();
+
+      // Normaliza a solo día
+      oldStart = DateTime(oldStart.year, oldStart.month, oldStart.day);
+      oldEnd = DateTime(oldEnd.year, oldEnd.month, oldEnd.day);
+
+      if (oldTime.isNotEmpty) {
+        await NotificationService.instance.cancelScheduledBetweenDates(
+          medicationId: widget.medicationId!,
+          timeHHmm: oldTime,
+          startDate: oldStart,
+          endDate: oldEnd,
+        );
+      }
+
+      // 2) Guardar cambios en Firestore
+      await medsCol.doc(widget.medicationId!).update(payload);
+
+      // 3) Programar notificaciones nuevas
+      await NotificationService.instance.scheduleDailyBetweenDates(
+        medicationId: widget.medicationId!,
+        title: name,
+        body: dose,
+        timeHHmm: _formatTime(_time),
+        startDate: _startDate,
+        endDate: _endDate,
+      );
+    } else {
+      // ADD: necesitamos ID antes para notificaciones
+      final newDoc = medsCol.doc(); // genera id
+      await newDoc.set({
+        ...payload,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+
+      await NotificationService.instance.scheduleDailyBetweenDates(
+        medicationId: newDoc.id,
+        title: name,
+        body: dose,
+        timeHHmm: _formatTime(_time),
+        startDate: _startDate,
+        endDate: _endDate,
+      );
+    }
+
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(widget.isEdit ? 'Cambios guardados' : 'Medicamento añadido'),
+      ),
+    );
+    Navigator.pop(context);
+  } on FirebaseException catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error guardando: ${e.code}')),
+    );
+  } catch (e) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Error: $e')),
+    );
+  } finally {
+    if (mounted) setState(() => _loading = false);
+  }
+}
+
+  void _openNotesDialog() {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Instrucciones especiales'),
+        content: TextField(
+          controller: _notesCtrl,
+          maxLines: 4,
+          decoration: const InputDecoration(
+            hintText: 'Ej: Tomar con comida, no mezclar con alcohol...',
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Listo'),
+          ),
+        ],
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
+    final title = widget.isEdit ? 'Editar medicamento' : 'Añadir medicamento';
+    final saveText = widget.isEdit ? 'Guardar cambios' : 'Añadir Medicamento';
+
     return Scaffold(
       backgroundColor: const Color(0xFFEFEFEF),
-
       appBar: AppBar(
         backgroundColor: const Color(0xFF4CAF50),
         elevation: 0,
         leading: IconButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: _loading ? null : () => Navigator.pop(context),
           icon: const Icon(Icons.arrow_back, color: Colors.white),
         ),
-        title: const Text(
-          'Añadir medicamento',
-          style: TextStyle(
+        title: Text(
+          title,
+          style: const TextStyle(
             fontWeight: FontWeight.w600,
             color: Colors.white,
           ),
         ),
       ),
-
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(18),
@@ -32,52 +311,67 @@ class AddMedicationScreen extends StatelessWidget {
               _FormCard(
                 icon: Icons.medication_outlined,
                 title: 'Nombre del medicamento',
-                child: const _FakeTextField(hint: 'Ej: Paracetamol'),
+                child: _RealTextField(
+                  controller: _nameCtrl,
+                  hint: 'Ej: Paracetamol',
+                ),
               ),
               const SizedBox(height: 14),
-
               _FormCard(
                 icon: Icons.local_hospital_outlined,
                 title: 'Dosis',
-                child: const _FakeTextField(hint: 'Ej: 500mg'),
+                child: _RealTextField(
+                  controller: _doseCtrl,
+                  hint: 'Ej: 500mg',
+                ),
               ),
               const SizedBox(height: 14),
-
               _FormCard(
                 icon: Icons.access_time,
                 title: 'Hora de la toma',
-                child: const _FakeDropdown(value: '08:00'),
+                child: _TapDropdown(
+                  value: _formatTime(_time),
+                  onTap: _pickTime,
+                ),
               ),
               const SizedBox(height: 14),
-
               _FormCard(
                 icon: Icons.autorenew,
                 title: 'Frecuencia',
-                child: const _FakeDropdown(value: 'Diario'),
+                child: _FrequencyDropdown(
+                  value: _frequency,
+                  onChanged: (v) => setState(() => _frequency = v),
+                ),
               ),
               const SizedBox(height: 14),
-
               _FormCard(
                 icon: Icons.calendar_today_outlined,
                 title: 'Fecha de inicio',
                 child: Column(
-                  children: const [
-                    _FakeTextField(hint: '29/01/2026', filled: true),
-                    SizedBox(height: 10),
-                    _RowLabel(icon: Icons.calendar_today_outlined, text: 'Fecha de fin'),
-                    SizedBox(height: 8),
-                    _FakeTextField(hint: '29/01/2026', filled: true),
+                  children: [
+                    _TapTextField(
+                      text: _formatDate(_startDate),
+                      onTap: _pickStartDate,
+                    ),
+                    const SizedBox(height: 10),
+                    const _RowLabel(
+                      icon: Icons.calendar_today_outlined,
+                      text: 'Fecha de fin',
+                    ),
+                    const SizedBox(height: 8),
+                    _TapTextField(
+                      text: _formatDate(_endDate),
+                      onTap: _pickEndDate,
+                    ),
                   ],
                 ),
               ),
-
               const SizedBox(height: 18),
-
               SizedBox(
                 width: double.infinity,
                 height: 44,
                 child: ElevatedButton(
-                  onPressed: null,
+                  onPressed: _loading ? null : _openNotesDialog,
                   style: ElevatedButton.styleFrom(
                     backgroundColor: const Color(0xFF4CAF50),
                     disabledBackgroundColor: const Color(0xFF4CAF50),
@@ -94,18 +388,16 @@ class AddMedicationScreen extends StatelessWidget {
                   ),
                 ),
               ),
-
               const SizedBox(height: 12),
-
               SizedBox(
                 width: double.infinity,
                 height: 52,
                 child: ElevatedButton.icon(
-                  onPressed: null,
+                  onPressed: _loading ? null : _save,
                   icon: const Icon(Icons.save_outlined, color: Colors.white),
-                  label: const Text(
-                    'Añadir Medicamento',
-                    style: TextStyle(
+                  label: Text(
+                    _loading ? 'Guardando...' : saveText,
+                    style: const TextStyle(
                       fontWeight: FontWeight.w600,
                       color: Colors.white,
                     ),
@@ -176,59 +468,155 @@ class _FormCard extends StatelessWidget {
   }
 }
 
-class _FakeTextField extends StatelessWidget {
+class _RealTextField extends StatelessWidget {
+  final TextEditingController controller;
   final String hint;
-  final bool filled;
 
-  const _FakeTextField({
+  const _RealTextField({
+    required this.controller,
     required this.hint,
-    this.filled = false,
   });
 
   @override
   Widget build(BuildContext context) {
     return TextField(
-      enabled: false, 
+      controller: controller,
       decoration: InputDecoration(
         hintText: hint,
         hintStyle: const TextStyle(color: Color(0xFF9E9E9E), fontSize: 13),
         filled: true,
-        fillColor: filled ? const Color(0xFFF2F2F2) : Colors.white,
+        fillColor: Colors.white,
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
-        disabledBorder: OutlineInputBorder(
+        enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
           borderSide: const BorderSide(color: Color(0xFFBDBDBD)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(8),
+          borderSide: const BorderSide(color: Color(0xFF4CAF50), width: 1.5),
         ),
       ),
     );
   }
 }
 
-class _FakeDropdown extends StatelessWidget {
-  final String value;
+class _TapTextField extends StatelessWidget {
+  final String text;
+  final VoidCallback onTap;
 
-  const _FakeDropdown({required this.value});
+  const _TapTextField({
+    required this.text,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 42,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF2F2F2),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFBDBDBD)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(fontSize: 13, color: Color(0xFF37474F)),
+              ),
+            ),
+            const Icon(Icons.calendar_month, color: Color(0xFF37474F), size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TapDropdown extends StatelessWidget {
+  final String value;
+  final VoidCallback onTap;
+
+  const _TapDropdown({
+    required this.value,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 40,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF2F2F2),
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: const Color(0xFFBDBDBD)),
+        ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Text(
+                value,
+                style: const TextStyle(fontSize: 13, color: Color(0xFF37474F)),
+              ),
+            ),
+            const Icon(Icons.arrow_drop_down, color: Color(0xFF37474F)),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FrequencyDropdown extends StatelessWidget {
+  final String value;
+  final ValueChanged<String> onChanged;
+
+  const _FrequencyDropdown({
+    required this.value,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final items = const ['Diario', 'Cada 8 horas', 'Cada 12 horas', 'Semanal'];
+
     return Container(
-      height: 40,
+      height: 42,
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: const Color(0xFFF2F2F2),
         borderRadius: BorderRadius.circular(8),
         border: Border.all(color: const Color(0xFFBDBDBD)),
       ),
-      child: Row(
-        children: [
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(fontSize: 13, color: Color(0xFF37474F)),
-            ),
-          ),
-          const Icon(Icons.arrow_drop_down, color: Color(0xFF37474F)),
-        ],
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<String>(
+          value: value,
+          isExpanded: true,
+          icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF37474F)),
+          items: items
+              .map(
+                (e) => DropdownMenuItem<String>(
+                  value: e,
+                  child: Text(
+                    e,
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF37474F)),
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+        ),
       ),
     );
   }

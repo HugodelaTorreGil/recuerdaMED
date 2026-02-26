@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
-import 'app.dart'; // si tienes MyApp en app.dart
+import 'app.dart';
+import 'services/notification_service.dart';
 
 
 void main() async {
@@ -9,6 +10,10 @@ void main() async {
   await Firebase.initializeApp(
     options: DefaultFirebaseOptions.currentPlatform,
   );
+  WidgetsFlutterBinding.ensureInitialized();
+  await Firebase.initializeApp();
+  await NotificationService.instance.init();
+  runApp(const MyApp());
   runApp(const MyApp());
 }
 
