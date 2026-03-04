@@ -2,9 +2,17 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:recuerdamed/widgets/medication_card.dart';
+import 'package:recuerdamed/services/notification_service.dart';
 
-class TodayScreen extends StatelessWidget {
+class TodayScreen extends StatefulWidget {
   const TodayScreen({super.key});
+
+  @override
+  State<TodayScreen> createState() => _TodayScreenState();
+}
+
+class _TodayScreenState extends State<TodayScreen> {
+  bool _askedExact = false;
 
   String _dayId(DateTime d) {
     final yyyy = d.year.toString();
@@ -127,6 +135,37 @@ class TodayScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    Future.microtask(() async {
+      if (_askedExact) return;
+      _askedExact = true;
+
+      final canExact = await NotificationService.instance.canExactAlarms();
+      if (!canExact && context.mounted) {
+        showDialog(
+          context: context,
+          builder: (_) => AlertDialog(
+            title: const Text('Permiso necesario'),
+            content: const Text(
+              'Para que los recordatorios salten a la hora exacta, activa "Alarmas exactas" para la app.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Ahora no'),
+              ),
+              TextButton(
+                onPressed: () async {
+                  Navigator.pop(context);
+                  await NotificationService.instance.openExactAlarmsSettings();
+                },
+                child: const Text('Activar'),
+              ),
+            ],
+          ),
+        );
+      }
+    });
+
     final user = FirebaseAuth.instance.currentUser;
 
     if (user == null) {
@@ -155,6 +194,20 @@ class TodayScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: const Color(0xFFEFEFEF),
+
+      floatingActionButton: FloatingActionButton(
+        onPressed: () async {
+          await NotificationService.instance.showNowTest(); // inmediata
+          await NotificationService.instance.scheduleTestIn2Minutes(); // en 2 min
+          final c = await NotificationService.instance.pendingCount();
+          if (!context.mounted) return;
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Pendientes: $c')),
+          );
+        },
+        child: const Icon(Icons.notifications),
+      ),
+
       body: SafeArea(
         child: Column(
           children: [

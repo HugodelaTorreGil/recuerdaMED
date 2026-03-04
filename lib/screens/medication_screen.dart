@@ -252,6 +252,7 @@ class _MedicationScreenState extends State<MedicationScreen> {
                                       await NotificationService.instance.cancelScheduledBetweenDates(
                                         medicationId: doc.id,
                                         timeHHmm: time,
+                                        frequency: freq,
                                         startDate: DateTime(start.year, start.month, start.day),
                                         endDate: DateTime(end.year, end.month, end.day),
                                       );

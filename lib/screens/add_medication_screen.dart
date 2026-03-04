@@ -23,9 +23,11 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   final _nameCtrl = TextEditingController();
   final _doseCtrl = TextEditingController();
   final _notesCtrl = TextEditingController();
+  int _weeklyDay = DateTime.monday;
 
   TimeOfDay _time = const TimeOfDay(hour: 8, minute: 0);
   String _frequency = 'Diario';
+  
 
   DateTime _startDate = DateTime.now();
   DateTime _endDate = DateTime.now();
@@ -62,13 +64,17 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
     final freq = (data['frequency'] ?? '').toString();
     if (freq.isNotEmpty) _frequency = freq;
 
+    final wd = data['weeklyDay'];
+    if (wd is int && wd >= 1 && wd <= 7) {
+      _weeklyDay = wd;
+    }
+
     final s = data['startDate'];
     final e = data['endDate'];
 
     if (s is Timestamp) _startDate = s.toDate();
     if (e is Timestamp) _endDate = e.toDate();
 
-    // Normaliza a "solo día"
     _startDate = DateTime(_startDate.year, _startDate.month, _startDate.day);
     _endDate = DateTime(_endDate.year, _endDate.month, _endDate.day);
 
@@ -78,7 +84,6 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   }
 
   TimeOfDay? _parseTime(String s) {
-    // Espera "HH:mm"
     final match = RegExp(r'^(\d{1,2}):(\d{2})$').firstMatch(s);
     if (match == null) return null;
     final h = int.tryParse(match.group(1) ?? '');
@@ -141,123 +146,168 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
   }
 
   Future<void> _save() async {
-  final user = FirebaseAuth.instance.currentUser;
-  if (user == null) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
 
-  final name = _nameCtrl.text.trim();
-  final dose = _doseCtrl.text.trim();
-  final notes = _notesCtrl.text.trim();
+    final name = _nameCtrl.text.trim();
+    final dose = _doseCtrl.text.trim();
+    final notes = _notesCtrl.text.trim();
 
-  if (name.isEmpty || dose.isEmpty) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Rellena nombre y dosis')),
+    if (name.isEmpty || dose.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Rellena nombre y dosis')),
+      );
+      return;
+    }
+
+    if (_endDate.isBefore(_startDate)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('La fecha de fin no puede ser anterior a la de inicio'),
+        ),
+      );
+      return;
+    }
+
+    // Si es activo hoy y la hora ya pasó y termina hoy => no habrá notificación
+    final now = DateTime.now();
+    final selectedTime = DateTime(
+      now.year,
+      now.month,
+      now.day,
+      _time.hour,
+      _time.minute,
     );
-    return;
-  }
 
-  if (_endDate.isBefore(_startDate)) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-          content: Text('La fecha de fin no puede ser anterior a la de inicio')),
-    );
-    return;
-  }
+    final startOnly = DateTime(_startDate.year, _startDate.month, _startDate.day);
+    final endOnly = DateTime(_endDate.year, _endDate.month, _endDate.day);
+    final todayOnly = DateTime(now.year, now.month, now.day);
 
-  setState(() => _loading = true);
+    final isActiveToday = !startOnly.isAfter(todayOnly) && !endOnly.isBefore(todayOnly);
+    final timePassedToday = selectedTime.isBefore(now);
 
-  try {
-    final medsCol = FirebaseFirestore.instance
-        .collection('users')
-        .doc(user.uid)
-        .collection('medications');
+    if (isActiveToday && timePassedToday && endOnly.isAtSameMomentAs(todayOnly)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Esa hora ya pasó hoy. Cambia la hora o amplía la fecha de fin.'),
+        ),
+      );
+      return;
+    }
 
-    final payload = <String, dynamic>{
-      'name': name,
-      'dose': dose,
-      'time': _formatTime(_time), // "08:00"
-      'frequency': _frequency,
-      'startDate': Timestamp.fromDate(_startDate),
-      'endDate': Timestamp.fromDate(_endDate),
-      'notes': notes,
-      'updatedAt': FieldValue.serverTimestamp(),
-    };
+    setState(() => _loading = true);
 
-    if (widget.isEdit) {
-      // 1) Cancelar notificaciones anteriores (si tenemos datos previos)
-      final old = widget.initialData ?? {};
-      final oldTime = (old['time'] ?? '').toString();
-      final oldStartTs = old['startDate'];
-      final oldEndTs = old['endDate'];
+    try {
+      final medsCol = FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('medications');
 
-      DateTime oldStart = _startDate;
-      DateTime oldEnd = _endDate;
-      if (oldStartTs is Timestamp) oldStart = oldStartTs.toDate();
-      if (oldEndTs is Timestamp) oldEnd = oldEndTs.toDate();
+      final payload = <String, dynamic>{
+        'name': name,
+        'dose': dose,
+        'time': _formatTime(_time),
+        'frequency': _frequency,
+        'startDate': Timestamp.fromDate(_startDate),
+        'endDate': Timestamp.fromDate(_endDate),
+        'notes': notes,
+        'updatedAt': FieldValue.serverTimestamp(),
+        'weeklyDay': _frequency == 'Semanal' ? _weeklyDay : null,
+      };
 
-      // Normaliza a solo día
-      oldStart = DateTime(oldStart.year, oldStart.month, oldStart.day);
-      oldEnd = DateTime(oldEnd.year, oldEnd.month, oldEnd.day);
+      if (widget.isEdit) {
+        // 1) Cancelar notificaciones anteriores
+        final old = widget.initialData ?? {};
+        final oldTime = (old['time'] ?? '').toString();
+        final oldFreq = (old['frequency'] ?? 'Diario').toString();
 
-      if (oldTime.isNotEmpty) {
-        await NotificationService.instance.cancelScheduledBetweenDates(
+        final oldStartTs = old['startDate'];
+        final oldEndTs = old['endDate'];
+
+        DateTime oldStart = _startDate;
+        DateTime oldEnd = _endDate;
+
+        if (oldStartTs is Timestamp) oldStart = oldStartTs.toDate();
+        if (oldEndTs is Timestamp) oldEnd = oldEndTs.toDate();
+
+        oldStart = DateTime(oldStart.year, oldStart.month, oldStart.day);
+        oldEnd = DateTime(oldEnd.year, oldEnd.month, oldEnd.day);
+
+        if (oldTime.isNotEmpty) {
+          await NotificationService.instance.cancelScheduledBetweenDates(
+            medicationId: widget.medicationId!,
+            timeHHmm: oldTime,
+            frequency: oldFreq,
+            startDate: oldStart,
+            endDate: oldEnd,
+          );
+        }
+
+        // 2) Guardar cambios
+        await medsCol.doc(widget.medicationId!).update(payload);
+
+        // 3) Programar nuevas (con frecuencia)
+        await NotificationService.instance.scheduleDailyBetweenDates(
           medicationId: widget.medicationId!,
-          timeHHmm: oldTime,
-          startDate: oldStart,
-          endDate: oldEnd,
+          title: name,
+          body: dose,
+          timeHHmm: _formatTime(_time),
+          frequency: _frequency,
+          startDate: _startDate,
+          endDate: _endDate,
+        );
+
+        final c = await NotificationService.instance.pendingCount();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Pendientes programadas: $c')),
+        );
+      } else {
+        // ADD: necesitamos ID antes
+        final newDoc = medsCol.doc();
+        await newDoc.set({
+          ...payload,
+          'createdAt': FieldValue.serverTimestamp(),
+        });
+
+        await NotificationService.instance.scheduleDailyBetweenDates(
+          medicationId: newDoc.id,
+          title: name,
+          body: dose,
+          timeHHmm: _formatTime(_time),
+          frequency: _frequency,
+          startDate: _startDate,
+          endDate: _endDate,
+        );
+
+        final c = await NotificationService.instance.pendingCount();
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Pendientes programadas: $c')),
         );
       }
 
-      // 2) Guardar cambios en Firestore
-      await medsCol.doc(widget.medicationId!).update(payload);
-
-      // 3) Programar notificaciones nuevas
-      await NotificationService.instance.scheduleDailyBetweenDates(
-        medicationId: widget.medicationId!,
-        title: name,
-        body: dose,
-        timeHHmm: _formatTime(_time),
-        startDate: _startDate,
-        endDate: _endDate,
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(widget.isEdit ? 'Cambios guardados' : 'Medicamento añadido'),
+        ),
       );
-    } else {
-      // ADD: necesitamos ID antes para notificaciones
-      final newDoc = medsCol.doc(); // genera id
-      await newDoc.set({
-        ...payload,
-        'createdAt': FieldValue.serverTimestamp(),
-      });
-
-      await NotificationService.instance.scheduleDailyBetweenDates(
-        medicationId: newDoc.id,
-        title: name,
-        body: dose,
-        timeHHmm: _formatTime(_time),
-        startDate: _startDate,
-        endDate: _endDate,
+      Navigator.pop(context);
+    } on FirebaseException catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error guardando: ${e.code}')),
       );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Error: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _loading = false);
     }
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(widget.isEdit ? 'Cambios guardados' : 'Medicamento añadido'),
-      ),
-    );
-    Navigator.pop(context);
-  } on FirebaseException catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error guardando: ${e.code}')),
-    );
-  } catch (e) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Error: $e')),
-    );
-  } finally {
-    if (mounted) setState(() => _loading = false);
   }
-}
 
   void _openNotesDialog() {
     showDialog(
@@ -343,6 +393,17 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
                   onChanged: (v) => setState(() => _frequency = v),
                 ),
               ),
+              if (_frequency == 'Semanal') ...[
+                const SizedBox(height: 14),
+                _FormCard(
+                  icon: Icons.event_repeat,
+                  title: 'Día de la semana',
+                  child: _WeeklyDayDropdown(
+                    value: _weeklyDay,
+                    onChanged: (v) => setState(() => _weeklyDay = v),
+                  ),
+                ),
+              ],
               const SizedBox(height: 14),
               _FormCard(
                 icon: Icons.calendar_today_outlined,
@@ -642,6 +703,81 @@ class _RowLabel extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _WeeklyDayDropdown extends StatelessWidget {
+  final int value; // 1..7
+  final ValueChanged<int> onChanged;
+
+  const _WeeklyDayDropdown({
+    required this.value,
+    required this.onChanged,
+  });
+
+  String _label(int d) {
+    switch (d) {
+      case DateTime.monday:
+        return 'Lunes';
+      case DateTime.tuesday:
+        return 'Martes';
+      case DateTime.wednesday:
+        return 'Miércoles';
+      case DateTime.thursday:
+        return 'Jueves';
+      case DateTime.friday:
+        return 'Viernes';
+      case DateTime.saturday:
+        return 'Sábado';
+      case DateTime.sunday:
+        return 'Domingo';
+      default:
+        return 'Lunes';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final items = <int>[
+      DateTime.monday,
+      DateTime.tuesday,
+      DateTime.wednesday,
+      DateTime.thursday,
+      DateTime.friday,
+      DateTime.saturday,
+      DateTime.sunday,
+    ];
+
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF2F2F2),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: const Color(0xFFBDBDBD)),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<int>(
+          value: value,
+          isExpanded: true,
+          icon: const Icon(Icons.arrow_drop_down, color: Color(0xFF37474F)),
+          items: items
+              .map(
+                (d) => DropdownMenuItem<int>(
+                  value: d,
+                  child: Text(
+                    _label(d),
+                    style: const TextStyle(fontSize: 13, color: Color(0xFF37474F)),
+                  ),
+                ),
+              )
+              .toList(),
+          onChanged: (v) {
+            if (v != null) onChanged(v);
+          },
+        ),
+      ),
     );
   }
 }
