@@ -3,7 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'main_shell.dart';
 import 'package:recuerdamed/screens/sing_up_screen.dart';
 
-
+//Login del usuario
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 

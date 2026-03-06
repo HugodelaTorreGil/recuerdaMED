@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+//Historial del usuario ( medicaciones tomadas, y omitidas, las que estan por definir no salen en esta pantalla )
 class HistoryScreen extends StatefulWidget {
   const HistoryScreen({super.key});
 
@@ -76,7 +77,7 @@ class _HistoryScreenState extends State<HistoryScreen> {
   }
 
   String _formatTimeOfDayFromString(String s) {
-    // Si ya viene "08:30" lo dejamos
+    //Si ya viene "08:30" lo dejamos
     if (RegExp(r'^\d{2}:\d{2}$').hasMatch(s.trim())) return s.trim();
     return s;
   }

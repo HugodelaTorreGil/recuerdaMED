@@ -1,10 +1,14 @@
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import 'today_screen.dart';
 import 'medication_screen.dart';
 import 'history_screen.dart';
 import 'profile_screen.dart';
 
+
+//Shell para moverse entre pantallas
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
 
@@ -21,6 +25,24 @@ class _MainShellState extends State<MainShell> {
     HistoryScreen(),
     ProfileScreen(),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureUserDoc();
+  }
+
+  Future<void> _ensureUserDoc() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+
+    await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+      'email': user.email ?? '',
+      'displayName': user.displayName ?? 'Usuario',
+      'createdAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    }, SetOptions(merge: true));
+  }
 
   @override
   Widget build(BuildContext context) {

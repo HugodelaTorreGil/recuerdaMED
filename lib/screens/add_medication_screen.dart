@@ -3,6 +3,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:recuerdamed/services/notification_service.dart';
 
+//AVISO (Francis que no te entre nada malo por el cuerpo :) )
+//Esta clase tiene tantas lineas de código porque la mayoría son partes del front que simplemente son visuales 
+//De lógica hay 300 líneas 
+
 class AddMedicationScreen extends StatefulWidget {
   const AddMedicationScreen({
     super.key,
@@ -10,7 +14,7 @@ class AddMedicationScreen extends StatefulWidget {
     this.initialData,
   });
 
-  final String? medicationId; // null => add, no null => edit
+  final String? medicationId; 
   final Map<String, dynamic>? initialData;
 
   bool get isEdit => medicationId != null;
@@ -169,7 +173,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       return;
     }
 
-    // Si es activo hoy y la hora ya pasó y termina hoy => no habrá notificación
+    //Si es activo hoy y la hora ya pasó y termina hoy => no habrá notificación
     final now = DateTime.now();
     final selectedTime = DateTime(
       now.year,
@@ -216,7 +220,7 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
       };
 
       if (widget.isEdit) {
-        // 1) Cancelar notificaciones anteriores
+        //1) Cancelar notificaciones anteriores
         final old = widget.initialData ?? {};
         final oldTime = (old['time'] ?? '').toString();
         final oldFreq = (old['frequency'] ?? 'Diario').toString();
@@ -234,25 +238,27 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
         oldEnd = DateTime(oldEnd.year, oldEnd.month, oldEnd.day);
 
         if (oldTime.isNotEmpty) {
-          await NotificationService.instance.cancelScheduledBetweenDates(
+          await NotificationService.instance.cancelBetweenDates(
             medicationId: widget.medicationId!,
             timeHHmm: oldTime,
             frequency: oldFreq,
+            weeklyDay: oldFreq == 'Semanal' ? (old['weeklyDay'] as int?) : null,
             startDate: oldStart,
             endDate: oldEnd,
           );
         }
 
-        // 2) Guardar cambios
+        //2) Guardar cambios
         await medsCol.doc(widget.medicationId!).update(payload);
 
-        // 3) Programar nuevas (con frecuencia)
-        await NotificationService.instance.scheduleDailyBetweenDates(
+        //3) Programar nuevas (con frecuencia)
+        await NotificationService.instance.scheduleBetweenDates(
           medicationId: widget.medicationId!,
           title: name,
           body: dose,
           timeHHmm: _formatTime(_time),
           frequency: _frequency,
+          weeklyDay: _frequency == 'Semanal' ? _weeklyDay : null,
           startDate: _startDate,
           endDate: _endDate,
         );
@@ -263,14 +269,14 @@ class _AddMedicationScreenState extends State<AddMedicationScreen> {
           SnackBar(content: Text('Pendientes programadas: $c')),
         );
       } else {
-        // ADD: necesitamos ID antes
+        //ADD: necesito tener el ID antes
         final newDoc = medsCol.doc();
         await newDoc.set({
           ...payload,
           'createdAt': FieldValue.serverTimestamp(),
         });
 
-        await NotificationService.instance.scheduleDailyBetweenDates(
+        await NotificationService.instance.scheduleBetweenDates(
           medicationId: newDoc.id,
           title: name,
           body: dose,
@@ -708,7 +714,7 @@ class _RowLabel extends StatelessWidget {
 }
 
 class _WeeklyDayDropdown extends StatelessWidget {
-  final int value; // 1..7
+  final int value;
   final ValueChanged<int> onChanged;
 
   const _WeeklyDayDropdown({

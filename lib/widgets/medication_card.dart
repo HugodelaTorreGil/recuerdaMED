@@ -6,10 +6,10 @@ class MedicationCard extends StatelessWidget {
     required this.name,
     required this.detail,
     required this.time,
-    required this.status, // null | "taken" | "skipped"
+    required this.status, 
     required this.onTaken,
     required this.onSkipped,
-    required this.onReset, // NUEVO
+    required this.onReset, 
   });
 
   final String name;

@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-import 'add_medication_screen.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:recuerdamed/services/notification_service.dart';
+import 'package:recuerdamed/screens/add_medication_screen.dart';
 
 class MedicationScreen extends StatefulWidget {
   const MedicationScreen({super.key});
@@ -42,11 +42,10 @@ class _MedicationScreenState extends State<MedicationScreen> {
     final userDoc = FirebaseFirestore.instance.collection('users').doc(uid);
     final medRef = userDoc.collection('medications').doc(medicationId);
 
-    // 1) Borra el medicamento
+    //Se borra el medicamento
     await medRef.delete();
 
-    // 2) (Opcional) Borra registros de history de ese medicamento
-    // Si tienes muchos registros, esto no escala (pero para DAM va perfecto).
+    //Si hay muchos registros, esto no escala.
     final historyQuery = await userDoc
         .collection('history')
         .where('medicationId', isEqualTo: medicationId)
@@ -249,7 +248,7 @@ class _MedicationScreenState extends State<MedicationScreen> {
                                       if (s is Timestamp) start = s.toDate();
                                       if (e is Timestamp) end = e.toDate();
 
-                                      await NotificationService.instance.cancelScheduledBetweenDates(
+                                      await NotificationService.instance.cancelBetweenDates(
                                         medicationId: doc.id,
                                         timeHHmm: time,
                                         frequency: freq,
@@ -257,7 +256,7 @@ class _MedicationScreenState extends State<MedicationScreen> {
                                         endDate: DateTime(end.year, end.month, end.day),
                                       );
 
-                                      // y luego tu borrado actual
+                                      // y luego el borrado actual
                                       await _deleteMedication(
                                         uid: user.uid,
                                         medicationId: doc.id,

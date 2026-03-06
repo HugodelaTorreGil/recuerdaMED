@@ -1,9 +1,18 @@
-import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:timezone/timezone.dart' as tz;
 import 'package:timezone/data/latest_all.dart' as tzdata;
+import 'package:flutter_timezone/flutter_timezone.dart';
 import 'package:android_intent_plus/android_intent.dart';
 import 'package:android_intent_plus/flag.dart';
+
+//La mayor parte de esta clase (por no decir toda) me ha ayudado chatgpt porque era infumable lo de las notificaciones, me he pasado 3 dias intentando solucionar errores 
+//y lo que hay hasta el momento funciona pero no bien del todo pero ya por culpa de android y no mía
+
+@pragma('vm:entry-point')
+void notificationTapBackground(NotificationResponse response) {
+  debugPrint('NOTIF (bg) payload=${response.payload}');
+}
 
 class NotificationService {
   NotificationService._();
@@ -19,31 +28,59 @@ class NotificationService {
     importance: Importance.max,
   );
 
+  bool _inited = false;
+
   Future<void> init() async {
-    // Timezone
+    if (_inited) return;
+    _inited = true;
+
+    // 1) Timezones
     tzdata.initializeTimeZones();
 
-    // Trabajamos en UTC y convertimos desde hora local al programar
-    tz.setLocalLocation(tz.UTC);
+    // En algunos móviles/plugins esto puede devolver algo que no sea String.
+    // Yo lo fuerzo a String y si falla tiro de tz.local.
+    String tzName;
+    try {
+      final dynamic tzInfo = await FlutterTimezone.getLocalTimezone();
+      tzName = tzInfo.toString();
+    } catch (_) {
+      tzName = 'UTC';
+    }
 
-    // Init settings
+    try {
+      tz.setLocalLocation(tz.getLocation(tzName));
+    } catch (_) {
+      // Si el nombre no existe en la DB de timezones, uso el local por defecto.
+      tz.setLocalLocation(tz.local);
+    }
+
+    // 2) Init settings
     const android = AndroidInitializationSettings('@mipmap/ic_launcher');
     const ios = DarwinInitializationSettings();
 
     const initSettings = InitializationSettings(android: android, iOS: ios);
-    await _plugin.initialize(initSettings);
 
-    // Android channel
+    // API NUEVA: settings: ...
+    await _plugin.initialize(
+      settings: initSettings,
+      onDidReceiveNotificationResponse: (NotificationResponse response) {
+        debugPrint('NOTIF TAP payload=${response.payload}');
+      },
+      onDidReceiveBackgroundNotificationResponse: notificationTapBackground,
+    );
+
+    // 3) Android channel + permisos
     final androidPlugin = _plugin.resolvePlatformSpecificImplementation<
         AndroidFlutterLocalNotificationsPlugin>();
 
     await androidPlugin?.createNotificationChannel(_channel);
 
-    // Permissions
+    // Android 13+ (POST_NOTIFICATIONS)
     await androidPlugin?.requestNotificationsPermission();
 
     await _plugin
-        .resolvePlatformSpecificImplementation<IOSFlutterLocalNotificationsPlugin>()
+        .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin>()
         ?.requestPermissions(alert: true, badge: true, sound: true);
   }
 
@@ -57,11 +94,12 @@ class NotificationService {
   }
 
   Future<void> showNowTest() async {
+    // API NUEVA: show requiere id: title: body: notificationDetails:
     await _plugin.show(
-      999999,
-      'Test RecuerdaMed',
-      'Si ves esto, permisos y canal OK',
-      NotificationDetails(
+      id: 999999,
+      title: 'Test RecuerdaMED',
+      body: 'Si ves esto, permisos y canal OK',
+      notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           _channel.id,
           _channel.name,
@@ -101,10 +139,11 @@ class NotificationService {
   }
 
   // -------------------------------
-  // Scheduling logic
+  // Scheduling
   // -------------------------------
 
   int _notifId(String medicationId, DateTime day, String timeHHmm) {
+    // ID determinista para poder cancelar fácil: med + día + hora
     final dayId =
         '${day.year}${day.month.toString().padLeft(2, '0')}${day.day.toString().padLeft(2, '0')}';
     final base = int.parse(dayId);
@@ -125,17 +164,16 @@ class NotificationService {
         const Duration(hours: 16),
       ];
     }
-    // Diario / Semanal / otros
-    return <Duration>[Duration.zero];
+    return <Duration>[Duration.zero]; // Diario / Semanal
   }
 
-  Future<void> scheduleDailyBetweenDates({
+  Future<void> scheduleBetweenDates({
     required String medicationId,
     required String title,
     required String body,
     required String timeHHmm,
     required String frequency,
-    int? weeklyDay, // 1..7 (solo si Semanal)
+    int? weeklyDay, // 1..7 si Semanal
     required DateTime startDate,
     required DateTime endDate,
   }) async {
@@ -143,7 +181,7 @@ class NotificationService {
     final baseHour = parts.isNotEmpty ? int.tryParse(parts[0]) ?? 8 : 8;
     final baseMinute = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
 
-    DateTime start = DateTime(startDate.year, startDate.month, startDate.day);
+    final DateTime start = DateTime(startDate.year, startDate.month, startDate.day);
     DateTime end = DateTime(endDate.year, endDate.month, endDate.day);
     if (end.isBefore(start)) end = start;
 
@@ -158,60 +196,50 @@ class NotificationService {
         : AndroidScheduleMode.inexactAllowWhileIdle;
 
     if (!canExact) {
-      debugPrint(
-        'Exact alarms NO permitidas: Android puede retrasar o saltarse recordatorios.',
-      );
+      debugPrint('Exact alarms NO permitidas: puede haber retrasos.');
     }
 
-    for (DateTime d = start;
-        !d.isAfter(end);
-        d = d.add(const Duration(days: 1))) {
+    for (DateTime d = start; !d.isAfter(end); d = d.add(const Duration(days: 1))) {
       count++;
       if (count > maxDays) break;
 
-      // Semanal: solo el weekday elegido (o el weekday del startDate si no viene)
       if (frequency == 'Semanal') {
         final wd = weeklyDay ?? start.weekday;
         if (d.weekday != wd) continue;
       }
 
-      // Base local (hora local del móvil)
-      final baseLocal = DateTime(d.year, d.month, d.day, baseHour, baseMinute);
+      final baseTz = tz.TZDateTime(
+        tz.local,
+        d.year,
+        d.month,
+        d.day,
+        baseHour,
+        baseMinute,
+      );
 
       for (final off in offsets) {
-        final scheduledLocal = baseLocal.add(off);
+        final scheduled = baseTz.add(off);
 
-        // Si al sumar horas pasamos de día, comprobamos rango
-        final dayOnly = DateTime(
-          scheduledLocal.year,
-          scheduledLocal.month,
-          scheduledLocal.day,
-        );
+        final dayOnly = DateTime(scheduled.year, scheduled.month, scheduled.day);
         if (dayOnly.isBefore(start) || dayOnly.isAfter(end)) continue;
 
-        // Si ya pasó en hora local, no programar
-        if (scheduledLocal.isBefore(DateTime.now())) continue;
+        if (scheduled.isBefore(tz.TZDateTime.now(tz.local))) continue;
 
-        final hh = scheduledLocal.hour.toString().padLeft(2, '0');
-        final mm = scheduledLocal.minute.toString().padLeft(2, '0');
+        final hh = scheduled.hour.toString().padLeft(2, '0');
+        final mm = scheduled.minute.toString().padLeft(2, '0');
         final hhmm = '$hh:$mm';
 
         final id = _notifId(medicationId, dayOnly, hhmm);
 
-        // Convertimos local -> UTC y lo programamos en tz.UTC
-        final scheduledUtc = scheduledLocal.toUtc();
-        final scheduledTz = tz.TZDateTime.from(scheduledUtc, tz.UTC);
+        debugPrint('SCHED local=$scheduled id=$id mode=$mode tz=${tz.local.name}');
 
-        debugPrint(
-          'SCHEDULING freq=$frequency local=$scheduledLocal utc=$scheduledUtc id=$id mode=$mode',
-        );
-
+        // API NUEVA: zonedSchedule con named params
         await _plugin.zonedSchedule(
-          id,
-          title,
-          body,
-          scheduledTz,
-          NotificationDetails(
+          id: id,
+          title: title,
+          body: body,
+          scheduledDate: scheduled,
+          notificationDetails: NotificationDetails(
             android: AndroidNotificationDetails(
               _channel.id,
               _channel.name,
@@ -222,18 +250,16 @@ class NotificationService {
             iOS: const DarwinNotificationDetails(),
           ),
           androidScheduleMode: mode,
-          uiLocalNotificationDateInterpretation:
-              UILocalNotificationDateInterpretation.absoluteTime,
         );
       }
     }
   }
 
-  Future<void> cancelScheduledBetweenDates({
+  Future<void> cancelBetweenDates({
     required String medicationId,
     required String timeHHmm,
     required String frequency,
-    int? weeklyDay, // 1..7 (solo si Semanal)
+    int? weeklyDay,
     required DateTime startDate,
     required DateTime endDate,
   }) async {
@@ -241,7 +267,7 @@ class NotificationService {
     final baseHour = parts.isNotEmpty ? int.tryParse(parts[0]) ?? 8 : 8;
     final baseMinute = parts.length > 1 ? int.tryParse(parts[1]) ?? 0 : 0;
 
-    DateTime start = DateTime(startDate.year, startDate.month, startDate.day);
+    final DateTime start = DateTime(startDate.year, startDate.month, startDate.day);
     DateTime end = DateTime(endDate.year, endDate.month, endDate.day);
     if (end.isBefore(start)) end = start;
 
@@ -250,13 +276,10 @@ class NotificationService {
     const maxDays = 365;
     int count = 0;
 
-    for (DateTime d = start;
-        !d.isAfter(end);
-        d = d.add(const Duration(days: 1))) {
+    for (DateTime d = start; !d.isAfter(end); d = d.add(const Duration(days: 1))) {
       count++;
       if (count > maxDays) break;
 
-      // Semanal: solo el weekday elegido (o el weekday del startDate si no viene)
       if (frequency == 'Semanal') {
         final wd = weeklyDay ?? start.weekday;
         if (d.weekday != wd) continue;
@@ -279,33 +302,30 @@ class NotificationService {
         final hhmm = '$hh:$mm';
 
         final id = _notifId(medicationId, dayOnly, hhmm);
-        await _plugin.cancel(id);
+
+        //API NUEVA: cancel con named param
+        await _plugin.cancel(id: id);
       }
     }
   }
 
   Future<void> scheduleTestIn2Minutes() async {
-    final nowLocal = DateTime.now();
-    final scheduledLocal = nowLocal.add(const Duration(minutes: 2));
+    final now = tz.TZDateTime.now(tz.local);
+    final scheduled = now.add(const Duration(minutes: 2));
 
     final canExact = await canExactAlarms();
     final mode = canExact
         ? AndroidScheduleMode.exactAllowWhileIdle
         : AndroidScheduleMode.inexactAllowWhileIdle;
 
-    final scheduledUtc = scheduledLocal.toUtc();
-    final scheduledTz = tz.TZDateTime.from(scheduledUtc, tz.UTC);
-
-    debugPrint(
-      'TEST SCHED local=$nowLocal scheduledLocal=$scheduledLocal scheduledUtc=$scheduledUtc canExact=$canExact mode=$mode',
-    );
+    debugPrint('TEST now=$now scheduled=$scheduled tz=${tz.local.name}');
 
     await _plugin.zonedSchedule(
-      123456,
-      'TEST PROGRAMADA',
-      'Debe salir en 2 minutos',
-      scheduledTz,
-      NotificationDetails(
+      id: 123456,
+      title: 'TEST PROGRAMADA',
+      body: 'Debe salir en 2 minutos',
+      scheduledDate: scheduled,
+      notificationDetails: NotificationDetails(
         android: AndroidNotificationDetails(
           _channel.id,
           _channel.name,
@@ -316,11 +336,6 @@ class NotificationService {
         iOS: const DarwinNotificationDetails(),
       ),
       androidScheduleMode: mode,
-      uiLocalNotificationDateInterpretation:
-          UILocalNotificationDateInterpretation.absoluteTime,
     );
-
-    final p = await pendingCount();
-    debugPrint('PENDING AFTER TEST=$p');
   }
 }

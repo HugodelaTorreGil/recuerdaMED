@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:recuerdamed/widgets/medication_card.dart';
 import 'package:recuerdamed/services/notification_service.dart';
 
+//Pantalla que sale después de iniciar sesión
 class TodayScreen extends StatefulWidget {
   const TodayScreen({super.key});
 
@@ -109,7 +110,7 @@ class _TodayScreenState extends State<TodayScreen> {
     required String dose,
     required String time,
     required String detail,
-    required String status, // "taken" | "skipped"
+    required String status,
   }) async {
     final now = DateTime.now();
     final dayId = _dayId(now);
@@ -211,7 +212,7 @@ class _TodayScreenState extends State<TodayScreen> {
       body: SafeArea(
         child: Column(
           children: [
-            // HEADER
+            //HEADER
             Container(
               width: double.infinity,
               padding: const EdgeInsets.fromLTRB(20, 24, 20, 32),
@@ -250,7 +251,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
             const SizedBox(height: 16),
 
-            // RESUMEN (solo meds activos hoy)
+            //RESUMEN (solo meds activos hoy)
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: medsRef.snapshots(),
               builder: (context, medsSnap) {
@@ -320,7 +321,7 @@ class _TodayScreenState extends State<TodayScreen> {
 
             const SizedBox(height: 20),
 
-            // LISTA (solo meds activos hoy)
+            //LISTA (solo meds activos hoy)
             Expanded(
               child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                 stream: medsRef.snapshots(),
@@ -419,7 +420,7 @@ class _TodayMedicationRow extends StatelessWidget {
     return StreamBuilder<DocumentSnapshot>(
       stream: historyRef.doc(historyDocId).snapshots(),
       builder: (context, histSnap) {
-        String? status; // NULL = pendiente (sin marcar)
+        String? status; 
 
         if (histSnap.hasData && histSnap.data!.exists) {
           final m = histSnap.data!.data() as Map<String, dynamic>;
