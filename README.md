@@ -71,3 +71,5 @@ lib/
 │   ├── add_medication_screen.dart
 │   ├── history_screen.dart
 │   └── profile_screen.dart
+├── services/
+│   ├── notification_service.dart
