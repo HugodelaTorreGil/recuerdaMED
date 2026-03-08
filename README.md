@@ -73,3 +73,5 @@ lib/
 │   └── profile_screen.dart
 ├── services/
 │   ├── notification_service.dart
+├── widgets/
+│   ├── medication_card.dart
